@@ -2,13 +2,21 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/streadway/amqp"
 )
+
+func failOnError(err error, msg string) {
+	if err != nil {
+		log.Fatalf("%s: %s", msg, err)
+	}
+}
 
 func main() {
 	router := mux.NewRouter()
@@ -21,8 +29,48 @@ func RequestBooking(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&bookingReq)
 	code := StringWithCharset(5, charset)
 	booking := Booking{code, bookingReq.Username, bookingReq.Destination}
+	SendMessage(booking)
 	response := Response{"Booking Success, Your Booking Code :" + booking.Code}
 	json.NewEncoder(w).Encode(response)
+}
+
+func SendMessage(booking Booking) {
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672")
+	failOnError(err, "Failed to connect AMQP")
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	failOnError(err, "Failed to connect Channel")
+	defer ch.Close()
+
+	q, err := ch.QueueDeclare(
+		"booking",
+		true,
+		false, //no-
+		false, //
+		false, //
+		nil,
+	)
+	failOnError(err, "Failed to declare a queue")
+
+	msg, err := json.Marshal(booking)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(string(msg))
+	err = ch.Publish(
+		"notifExchange",
+		q.Name,
+		false, //
+		false, //
+		amqp.Publishing{
+			ContentType: "text/plain",
+			Body:        []byte(string(msg)),
+		})
+
+	log.Printf("[x] Sent %s", msg)
+	failOnError(err, "Failed to publish a messages")
 }
 
 type BookingReq struct {
